@@ -1,158 +1,162 @@
 class Reptile:
 
-  def __init__(self, model, log, params):
+    def __init__(self, model, log, params):
 
-    # Intialize Reptile Parameters
-    self.inner_step_size = params[0]
-    self.inner_batch_size = params[1]
-    self.outer_step_size = params[2]
-    self.outer_iterations = params[3]
-    self.meta_batch_size = params[4] 
-    self.eval_iterations = params[5] 
-    self.eval_batch_size = params[6]
+        # Intialize Reptile Parameters
+        self.inner_step_size = params[0]
+        self.inner_batch_size = params[1]
+        self.outer_step_size = params[2]
+        self.outer_iterations = params[3]
+        self.meta_batch_size = params[4]
+        self.eval_iterations = params[5]
+        self.eval_batch_size = params[6]
 
-    # Initialize Torch Model and Tensorboard
-    self.model = model.to(device)
-    self.log = log
+        # Initialize Torch Model and Tensorboard
+        self.model = model.to(device)
+        self.log = log
 
-  def reset(self):
+    def reset(self):
 
-    # Reset Training Gradients
-    self.model.zero_grad()
-    self.current_loss = 0
-    self.current_batch = 0
+        # Reset Training Gradients
+        self.model.zero_grad()
+        self.current_loss = 0
+        self.current_batch = 0
 
-  def train(self, task):
+    def train(self, task):
 
-    # Train from Scratch
-    self.reset()
+        # Train from Scratch
+        self.reset()
 
-    # Outer Training Loop
-    for outer_iteration in tqdm.tqdm(range(self.outer_iterations)):
+        # Outer Training Loop
+        for outer_iteration in tqdm.tqdm(range(self.outer_iterations)):
 
-      # Track Current Weights
-      current_weights = deepcopy(self.model.state_dict())
+            # Track Current Weights
+            current_weights = deepcopy(self.model.state_dict())
 
-      # Sample a new Subtask
-      samples, task_theta = sample(task)
+            # Sample a new Subtask
+            samples, task_theta = sample(task)
 
-      # Inner Training Loop
-      for inner_iteration in range(self.inner_batch_size):
+            # Inner Training Loop
+            for inner_iteration in range(self.inner_batch_size):
 
-        # Process Meta Learning Batches
-        for batch in range(0, len(sample_space), self.meta_batch_size):
+                # Process Meta Learning Batches
+                for batch in range(0, len(sample_space), self.meta_batch_size):
 
-          # Get Permuted Batch from Sample
-          perm = np.random.permutation(len(sample_space))
-          idx = perm[batch: batch + self.meta_batch_size][:, None]
+                    # Get Permuted Batch from Sample
+                    perm = np.random.permutation(len(sample_space))
+                    idx = perm[batch : batch + self.meta_batch_size][:, None]
 
-          # Calculate Batch Loss
-          batch_loss = self.loss(sample_space[idx], samples[idx])
-          batch_loss.backward()
+                    # Calculate Batch Loss
+                    batch_loss = self.loss(sample_space[idx], samples[idx])
+                    batch_loss.backward()
 
-          # Update Model Parameters
-          for theta in self.model.parameters():
+                    # Update Model Parameters
+                    for theta in self.model.parameters():
 
-            # Get Parameter Gradient
-            grad = theta.grad.data
+                        # Get Parameter Gradient
+                        grad = theta.grad.data
 
-            # Update Model Parameter
-            theta.data -= self.inner_step_size * grad
+                        # Update Model Parameter
+                        theta.data -= self.inner_step_size * grad
 
-          # Update Model Loss from Torch Model Tensor
-          loss_tensor = batch_loss.cpu()
-          self.current_loss += loss_tensor.data.numpy()
-          self.current_batch += 1
+                    # Update Model Loss from Torch Model Tensor
+                    loss_tensor = batch_loss.cpu()
+                    self.current_loss += loss_tensor.data.numpy()
+                    self.current_batch += 1
 
-      # Linear Cooling Schedule
-      alpha = self.outer_step_size * (1 - outer_iteration / self.outer_iterations)
+            # Linear Cooling Schedule
+            alpha = self.outer_step_size * (1 - outer_iteration / self.outer_iterations)
 
-      # Get Current Candidate Weights
-      candidate_weights = self.model.state_dict()
+            # Get Current Candidate Weights
+            candidate_weights = self.model.state_dict()
 
-      # Transfer Candidate Weights to Model State Checkpoint
-      state_dict = {candidate: (current_weights[candidate] + alpha * 
-                               (candidate_weights[candidate] - current_weights[candidate])) 
-                                for candidate in candidate_weights}
-      self.model.load_state_dict(state_dict)
-      
-      # Log new Training Loss
-      self.log.add_scalars('Model Estimate/Loss', 
-                           {'Loss' : self.current_loss / self.current_batch}, 
-                           outer_iteration)
+            # Transfer Candidate Weights to Model State Checkpoint
+            state_dict = {
+                candidate: (
+                    current_weights[candidate]
+                    + alpha * (candidate_weights[candidate] - current_weights[candidate])
+                )
+                for candidate in candidate_weights
+            }
+            self.model.load_state_dict(state_dict)
 
-  def loss(self, x, y):
+            # Log new Training Loss
+            self.log.add_scalars(
+                "Model Estimate/Loss", {"Loss": self.current_loss / self.current_batch}, outer_iteration
+            )
 
-    # Reset Torch Gradient
-    self.model.zero_grad()
+    def loss(self, x, y):
 
-    # Calculate Torch Tensors
-    x = torch.tensor(x, device = device, dtype = torch.float32)
-    y = torch.tensor(y, device = device, dtype = torch.float32)
+        # Reset Torch Gradient
+        self.model.zero_grad()
 
-    # Estimate over Sample
-    yhat = self.model(x)
+        # Calculate Torch Tensors
+        x = torch.tensor(x, device=device, dtype=torch.float32)
+        y = torch.tensor(y, device=device, dtype=torch.float32)
 
-    # Regression Loss over Estimate
-    loss = nn.MSELoss()
-    output = loss(yhat, y)
+        # Estimate over Sample
+        yhat = self.model(x)
 
-    return output
+        # Regression Loss over Estimate
+        loss = nn.MSELoss()
+        output = loss(yhat, y)
 
-  def predict(self, x):
+        return output
 
-    # Estimate using Torch Model
-    t = torch.tensor(x, device = device, dtype = torch.float32)
-    t = self.model(t)
+    def predict(self, x):
 
-    # Bring Torch Tensor from GPU to System Host Memory
-    t = t.cpu()
+        # Estimate using Torch Model
+        t = torch.tensor(x, device=device, dtype=torch.float32)
+        t = self.model(t)
 
-    # Return Estimate as Numpy Float
-    y = t.data.numpy()
+        # Bring Torch Tensor from GPU to System Host Memory
+        t = t.cpu()
 
-    return y
+        # Return Estimate as Numpy Float
+        y = t.data.numpy()
 
-  def eval(self, base_truth, meta_batch_size, gradient_steps, inner_step_size):
+        return y
 
-    # Sample Points from Task Sample Space
-    x, y = sample_points(base_truth, self.meta_batch_size)
+    def eval(self, base_truth, meta_batch_size, gradient_steps, inner_step_size):
 
-    # Model Base Estimate over Sample Space
-    estimate = [self.predict(sample_space[:,None])]
+        # Sample Points from Task Sample Space
+        x, y = sample_points(base_truth, self.meta_batch_size)
 
-    # Store Meta-Initialization Weights
-    meta_weights = deepcopy(self.model.state_dict())
+        # Model Base Estimate over Sample Space
+        estimate = [self.predict(sample_space[:, None])]
 
-    # Get Estimate Loss over Meta-Initialization
-    loss_t = self.loss(x,y).cpu()
-    meta_loss = loss_t.data.numpy()
+        # Store Meta-Initialization Weights
+        meta_weights = deepcopy(self.model.state_dict())
 
-    # Calculcate Estimate over Gradient Steps
-    for step in range(gradient_steps):
+        # Get Estimate Loss over Meta-Initialization
+        loss_t = self.loss(x, y).cpu()
+        meta_loss = loss_t.data.numpy()
 
-      # Calculate Evaluation Loss and Backpropagate
-      eval_loss = self.loss(x,y)
-      eval_loss.backward()
+        # Calculcate Estimate over Gradient Steps
+        for step in range(gradient_steps):
 
-      # Update Model Estimate Parameters
-      for theta in self.model.parameters():
+            # Calculate Evaluation Loss and Backpropagate
+            eval_loss = self.loss(x, y)
+            eval_loss.backward()
 
-        # Get Parameter Gradient
-        grad = theta.grad.data
+            # Update Model Estimate Parameters
+            for theta in self.model.parameters():
 
-        # Update Model Parameter
-        theta.data -= self.inner_step_size * grad
+                # Get Parameter Gradient
+                grad = theta.grad.data
 
-      # Update Estimate over Sample Space
-      estimate.append(self.predict(sample_space[:, None]))
+                # Update Model Parameter
+                theta.data -= self.inner_step_size * grad
 
-    # Get Estimate Loss over Evaluation
-    loss_t = self.loss(x,y).cpu()
-    estimate_loss = loss_t.data.numpy()
-    evaluation_loss = abs(meta_loss - estimate_loss)/meta_batch_size
-    
-    # Restore Meta-Initialization Weights
-    self.model.load_state_dict(meta_weights)
+            # Update Estimate over Sample Space
+            estimate.append(self.predict(sample_space[:, None]))
 
-    return estimate, evaluation_loss
+        # Get Estimate Loss over Evaluation
+        loss_t = self.loss(x, y).cpu()
+        estimate_loss = loss_t.data.numpy()
+        evaluation_loss = abs(meta_loss - estimate_loss) / meta_batch_size
+
+        # Restore Meta-Initialization Weights
+        self.model.load_state_dict(meta_weights)
+
+        return estimate, evaluation_loss
